@@ -5,3 +5,5 @@ google-generativeai
 python-dotenv
 httpx
 pydantic[email]
+beautifulsoup4
+lxml

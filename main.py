@@ -36,7 +36,7 @@ def require_admin(x_admin_secret: str = Header(...)):
 
 # ── Types ─────────────────────────────────────────────────────────────────────
 
-ScenarioType     = Literal["website", "themed", "ecommerce", "news", "tutorial", "personal_brand", "seo_blitz", "affiliate"]
+ScenarioType     = Literal["website", "data"]
 FrequencyType    = Literal["daily", "weekly", "bi-weekly", "3x-week", "2x-week", "monthly"]
 ContentLengthType = Literal["short", "medium", "long", "longform"]
 ToneType         = Literal["professional", "casual", "educational", "humorous", "inspirational", "journalistic"]
@@ -46,7 +46,7 @@ ToneType         = Literal["professional", "casual", "educational", "humorous", 
 
 class CreateAgentRequest(BaseModel):
     name: str = "My Blog Agent"               # human-friendly label
-    scenario: ScenarioType = "themed"
+    scenario: ScenarioType = "data"
     website_url: Optional[str] = None
     themes: Optional[list[str]] = None
     duration_months: float = 1.0              # 0.5 – 12
@@ -67,9 +67,28 @@ def root():
         "status": "AutoBlog Agent System running",
         "version": "3.0.0",
         "agent_limit_per_user": functions.AGENT_LIMIT,
-        "scenarios": list(functions.SCENARIO_FOCUS.keys()),
         "frequencies": list(functions.FREQUENCY_TO_DAYS.keys()),
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  WEBSITE SCRAPER
+# ══════════════════════════════════════════════════════════════════════════════
+
+class ScrapeRequest(BaseModel):
+    url: str
+
+@app.post("/api/scrape", tags=["Tools"])
+def scrape_website(body: ScrapeRequest):
+    """
+    Scrape a website and return its title, description, headings, and body text.
+    Used by the frontend when a user selects the 'Website' agent mode.
+    """
+    try:
+        data = functions.scrape_website(body.url)
+        return data
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
 
 # ══════════════════════════════════════════════════════════════════════════════

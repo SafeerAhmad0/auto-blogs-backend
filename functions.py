@@ -1,5 +1,7 @@
 import os
 import json
+import httpx
+from bs4 import BeautifulSoup
 from datetime import date, timedelta
 from typing import Optional
 
@@ -40,14 +42,15 @@ CONTENT_LENGTH_TO_WORDS: dict[str, int] = {
 }
 
 SCENARIO_FOCUS: dict[str, str] = {
-    "website":        "Analyse the provided website and create topically relevant, SEO-optimised content that matches the site's niche and audience.",
-    "themed":         "Create a content calendar purely based on the provided themes and topics.",
-    "ecommerce":      "Focus on product showcases, buying guides, gift guides, product comparisons, and review-style posts that drive purchase intent.",
-    "news":           "Cover industry news, trend analyses, weekly roundups, hot takes, and opinion pieces. Keep content timely and relevant.",
-    "tutorial":       "Write step-by-step how-to guides, beginner tutorials, advanced deep-dives, and practical walkthroughs.",
-    "personal_brand": "Create thought leadership pieces, personal stories, expertise showcases, behind-the-scenes content, and industry commentary.",
-    "seo_blitz":      "Build a pillar-and-cluster SEO strategy: one pillar post per topic supported by tightly related cluster posts targeting long-tail keywords.",
-    "affiliate":      "Create affiliate-friendly content: product reviews, 'best of' roundups, comparisons, alternatives, and discount-focused posts.",
+    "website": "Analyse the provided website and create topically relevant, SEO-optimised content that matches the site's niche and audience.",
+    "themed":  "Create a content calendar based on the provided themes, topics, and data the user supplied.",
+    # Legacy keys kept so old agents still work
+    "ecommerce":      "Focus on product showcases, buying guides, and review-style posts that drive purchase intent.",
+    "news":           "Cover industry news, trend analyses, weekly roundups, and hot takes.",
+    "tutorial":       "Write step-by-step how-to guides, beginner tutorials, and practical walkthroughs.",
+    "personal_brand": "Create thought leadership pieces, personal stories, and expertise showcases.",
+    "seo_blitz":      "Build a pillar-and-cluster SEO strategy targeting long-tail keywords.",
+    "affiliate":      "Create affiliate-friendly content: reviews, 'best of' roundups, and comparisons.",
 }
 
 # ── Gemini helpers ────────────────────────────────────────────────────────────
@@ -389,6 +392,68 @@ def create_agent_and_schedule(
     schedule = create_schedule_entries(entries)
 
     return {"agent": agent, "schedule": schedule}
+
+
+
+# ── Website Scraper ───────────────────────────────────────────────────────────
+
+def scrape_website(url: str) -> dict:
+    """
+    Scrape a website URL and return structured content for AI analysis.
+    Returns: { url, title, description, headings, body_text, word_count }
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; AutoBlogBot/1.0; +https://autoblog.ai)",
+        "Accept": "text/html,application/xhtml+xml",
+    }
+
+    try:
+        resp = httpx.get(url, headers=headers, timeout=15, follow_redirects=True)
+        resp.raise_for_status()
+    except httpx.TimeoutException:
+        raise ValueError(f"Request timed out fetching: {url}")
+    except httpx.HTTPStatusError as e:
+        raise ValueError(f"HTTP {e.response.status_code} when fetching: {url}")
+    except Exception as e:
+        raise ValueError(f"Failed to fetch URL: {e}")
+
+    soup = BeautifulSoup(resp.text, "lxml")
+
+    # Remove noise
+    for tag in soup(["script", "style", "nav", "footer", "header", "aside", "form", "noscript"]):
+        tag.decompose()
+
+    title = (soup.find("title") or soup.find("h1") or soup.find("h2"))
+    title_text = title.get_text(strip=True) if title else ""
+
+    meta_desc = soup.find("meta", attrs={"name": "description"})
+    description = meta_desc["content"].strip() if meta_desc and meta_desc.get("content") else ""
+
+    headings = []
+    for tag in soup.find_all(["h1", "h2", "h3"]):
+        text = tag.get_text(strip=True)
+        if text and len(text) > 3:
+            headings.append(text)
+    headings = headings[:20]
+
+    main = soup.find("main") or soup.find("article") or soup.find("body")
+    raw_text = main.get_text(separator=" ", strip=True) if main else soup.get_text(separator=" ", strip=True)
+
+    # Collapse whitespace
+    import re
+    body_text = re.sub(r"\s+", " ", raw_text).strip()
+    body_text = body_text[:5000]  # cap at 5k chars for Gemini
+
+    word_count = len(body_text.split())
+
+    return {
+        "url": url,
+        "title": title_text,
+        "description": description,
+        "headings": headings,
+        "body_text": body_text,
+        "word_count": word_count,
+    }
 
 
 def get_or_generate_blog(agent_id: str, user_id: str, target_date: str) -> dict:
