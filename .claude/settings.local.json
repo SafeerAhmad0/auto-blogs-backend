@@ -6,7 +6,9 @@
       "Bash(py --version 2>&1 || py3 --version 2>&1)",
       "Bash(cd \"C:\\\\Users\\\\safee\\\\.claude\\\\plugins\\\\cache\\\\ui-ux-pro-max-skill\\\\ui-ux-pro-max\\\\2.5.0\\\\.claude\\\\skills\\\\ui-ux-pro-max\" && py scripts/search.py \"AI blog automation SaaS content tool vibrant playful\" --design-system -p \"AutoBlog\" -f markdown 2>&1)",
       "Bash(cd \"C:\\\\Users\\\\safee\\\\.claude\\\\plugins\\\\cache\\\\ui-ux-pro-max-skill\\\\ui-ux-pro-max\\\\2.5.0\\\\src\\\\ui-ux-pro-max\" && py scripts/search.py \"AI blog automation SaaS content tool vibrant playful claymorphism\" --design-system -p \"AutoBlog\" -f markdown 2>&1)",
-      "Bash(cd \"C:\\\\Users\\\\safee\\\\.claude\\\\plugins\\\\cache\\\\ui-ux-pro-max-skill\\\\ui-ux-pro-max\\\\2.5.0\\\\src\\\\ui-ux-pro-max\" && py scripts/search.py \"claymorphism vibrant SaaS\" --domain style -n 3 2>&1 && py scripts/search.py \"SaaS automation tool\" --domain color -n 3 2>&1)"
+      "Bash(cd \"C:\\\\Users\\\\safee\\\\.claude\\\\plugins\\\\cache\\\\ui-ux-pro-max-skill\\\\ui-ux-pro-max\\\\2.5.0\\\\src\\\\ui-ux-pro-max\" && py scripts/search.py \"claymorphism vibrant SaaS\" --domain style -n 3 2>&1 && py scripts/search.py \"SaaS automation tool\" --domain color -n 3 2>&1)",
+      "Bash(cd \"C:\\\\Users\\\\safee\\\\Documents\\\\AI Automates\\\\auto-blog-frontend\" && sed -i \"s/'Nunito', sans-serif/var\\(--font-nunito\\), sans-serif/g; s/'Nunito'/var\\(--font-nunito\\)/g; s/'DM Sans', sans-serif/var\\(--font-dm-sans\\), sans-serif/g; s/'DM Sans'/var\\(--font-dm-sans\\)/g\" app/globals.css)",
+      "Bash(cd \"C:\\\\Users\\\\safee\\\\.claude\\\\plugins\\\\cache\\\\ui-ux-pro-max-skill\\\\ui-ux-pro-max\\\\2.5.0\\\\src\\\\ui-ux-pro-max\" && py scripts/search.py \"SaaS tool soft calm soothing blue minimal clean\" --design-system -p \"AutoBlog\" -f markdown 2>&1 && py scripts/search.py \"soft neumorphic calm soothing blue\" --domain style -n 2 2>&1 && py scripts/search.py \"SaaS calm professional\" --domain color -n 2 2>&1)"
     ]
   }
 }

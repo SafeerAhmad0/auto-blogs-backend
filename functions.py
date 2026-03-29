@@ -24,7 +24,7 @@ if _missing:
 # ── Clients ───────────────────────────────────────────────────────────────────
 
 _genai_client = google_genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-GEMINI_MODEL = "gemini-2.0-flash"
+GEMINI_MODEL = "gemini-2.5-flash"
 
 supabase: Client = create_client(
     os.getenv("SUPABASE_URL"),
