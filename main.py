@@ -4,6 +4,7 @@ from typing import Optional, Literal
 
 from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
@@ -17,39 +18,53 @@ app = FastAPI(
     version="3.0.0",
 )
 
+# ── CORS ──────────────────────────────────────────────────────────────────────
+# Set ALLOWED_ORIGINS in your environment (comma-separated list of frontend URLs).
+# Example: https://yourdomain.com,https://www.yourdomain.com
+_raw_origins = os.getenv("ALLOWED_ORIGINS", "")
+ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS if ALLOWED_ORIGINS else ["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-ADMIN_SECRET = os.getenv("ADMIN_SECRET", "changeme")
+# ── Admin auth ────────────────────────────────────────────────────────────────
 
-# ── Auth ──────────────────────────────────────────────────────────────────────
+ADMIN_SECRET = os.getenv("ADMIN_SECRET", "")
+if not ADMIN_SECRET:
+    import warnings
+    warnings.warn(
+        "ADMIN_SECRET environment variable is not set. Admin endpoints are disabled.",
+        RuntimeWarning,
+        stacklevel=1,
+    )
+
 
 def require_admin(x_admin_secret: str = Header(...)):
-    if x_admin_secret != ADMIN_SECRET:
+    if not ADMIN_SECRET or x_admin_secret != ADMIN_SECRET:
         raise HTTPException(status_code=401, detail="Invalid admin secret")
 
 
 # ── Types ─────────────────────────────────────────────────────────────────────
 
-ScenarioType     = Literal["website", "data"]
-FrequencyType    = Literal["daily", "weekly", "bi-weekly", "3x-week", "2x-week", "monthly"]
+ScenarioType      = Literal["website", "data"]
+FrequencyType     = Literal["daily", "weekly", "bi-weekly", "3x-week", "2x-week", "monthly"]
 ContentLengthType = Literal["short", "medium", "long", "longform"]
-ToneType         = Literal["professional", "casual", "educational", "humorous", "inspirational", "journalistic"]
+ToneType          = Literal["professional", "casual", "educational", "humorous", "inspirational", "journalistic"]
 
 
 # ── Request models ────────────────────────────────────────────────────────────
 
 class CreateAgentRequest(BaseModel):
-    name: str = "My Blog Agent"               # human-friendly label
+    name: str = "My Blog Agent"
     scenario: ScenarioType = "data"
     website_url: Optional[str] = None
     themes: Optional[list[str]] = None
-    duration_months: float = 1.0              # 0.5 – 12
+    duration_months: float = 1.0
     frequency: FrequencyType = "weekly"
     content_length: ContentLengthType = "medium"
     tone: ToneType = "professional"
@@ -61,7 +76,7 @@ class CreateAgentRequest(BaseModel):
 
 # ── Health ────────────────────────────────────────────────────────────────────
 
-@app.get("/", tags=["Health"])
+@app.api_route("/", methods=["GET", "HEAD"], tags=["Health"])
 def root():
     return {
         "status": "AutoBlog Agent System running",
@@ -182,7 +197,6 @@ def get_dashboard(user_id: str):
         "upcoming_posts": upcoming_res.data,
         "chart_data": chart_data,
     }
-
 
 
 @app.get("/api/{user_id}/stats", tags=["User"])
@@ -393,3 +407,11 @@ def admin_set_user_limit(user_id: str, limit: int):
     """Override the agent limit for a specific user (admin only)."""
     functions.supabase.table("user_stats").update({"agent_limit": limit}).eq("user_id", user_id).execute()
     return {"message": f"Agent limit for {user_id} set to {limit}"}
+
+
+# ── Entry point (for Render / local dev) ─────────────────────────────────────
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)

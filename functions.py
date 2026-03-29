@@ -1,20 +1,30 @@
 import os
+import re
 import json
+import ipaddress
 import httpx
 from bs4 import BeautifulSoup
 from datetime import date, timedelta
 from typing import Optional
+from urllib.parse import urlparse
 
-import google.generativeai as genai
+from google import genai as google_genai
 from supabase import create_client, Client
 from dotenv import load_dotenv
 
 load_dotenv()
 
+# ── Startup validation ────────────────────────────────────────────────────────
+
+_REQUIRED_ENV = ["GEMINI_API_KEY", "SUPABASE_URL", "SUPABASE_KEY"]
+_missing = [v for v in _REQUIRED_ENV if not os.getenv(v)]
+if _missing:
+    raise RuntimeError(f"Missing required environment variables: {', '.join(_missing)}")
+
 # ── Clients ───────────────────────────────────────────────────────────────────
 
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-gemini = genai.GenerativeModel("gemini-2.5-flash-lite")
+_genai_client = google_genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+GEMINI_MODEL = "gemini-2.0-flash"
 
 supabase: Client = create_client(
     os.getenv("SUPABASE_URL"),
@@ -43,7 +53,7 @@ CONTENT_LENGTH_TO_WORDS: dict[str, int] = {
 
 SCENARIO_FOCUS: dict[str, str] = {
     "website": "Analyse the provided website and create topically relevant, SEO-optimised content that matches the site's niche and audience.",
-    "themed":  "Create a content calendar based on the provided themes, topics, and data the user supplied.",
+    "data":    "Create a content calendar based on the provided themes, topics, and data the user supplied.",
     # Legacy keys kept so old agents still work
     "ecommerce":      "Focus on product showcases, buying guides, and review-style posts that drive purchase intent.",
     "news":           "Cover industry news, trend analyses, weekly roundups, and hot takes.",
@@ -56,8 +66,14 @@ SCENARIO_FOCUS: dict[str, str] = {
 # ── Gemini helpers ────────────────────────────────────────────────────────────
 
 def ask_gemini(prompt: str) -> str:
-    response = gemini.generate_content(prompt)
-    return response.text.strip()
+    try:
+        response = _genai_client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=prompt,
+        )
+        return response.text.strip()
+    except Exception as e:
+        raise RuntimeError(f"Gemini API error: {e}")
 
 
 def parse_json_from_gemini(text: str) -> dict | list:
@@ -65,7 +81,10 @@ def parse_json_from_gemini(text: str) -> dict | list:
     if clean.startswith("```"):
         clean = clean.split("\n", 1)[-1]
         clean = clean.rsplit("```", 1)[0]
-    return json.loads(clean)
+    try:
+        return json.loads(clean)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Gemini returned invalid JSON: {e}\nRaw response: {clean[:200]}")
 
 
 # ── Schedule date calculation ─────────────────────────────────────────────────
@@ -151,7 +170,7 @@ def build_content_prompt(
 
     scenario_instructions = {
         "website":        "Write as a subject-matter expert matching the site's niche. Include internal-link placeholders like [Link: related post].",
-        "themed":         "Write an engaging, informative post that covers the topic thoroughly.",
+        "data":           "Write an engaging, informative post that covers the topic thoroughly.",
         "ecommerce":      "Include a product recommendation section and a clear CTA to buy or explore.",
         "news":           "Use a journalistic style. Lead with the news hook. Include context and takeaways.",
         "tutorial":       "Use numbered steps with clear headings. Include prerequisites and a summary checklist.",
@@ -314,6 +333,98 @@ def mark_schedule_published(schedule_id: str):
     supabase.table("agent_schedule").update({"status": "published"}).eq("id", schedule_id).execute()
 
 
+# ── URL validation (SSRF protection) ─────────────────────────────────────────
+
+_BLOCKED_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+
+def _validate_scrape_url(url: str) -> None:
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        raise ValueError("Invalid URL")
+
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError("Only http and https URLs are allowed")
+
+    host = (parsed.hostname or "").lower()
+    if not host:
+        raise ValueError("Invalid URL: no host found")
+
+    if host in _BLOCKED_HOSTS:
+        raise ValueError("Requests to localhost are not allowed")
+
+    # Block private/reserved IP ranges
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            raise ValueError("Requests to private or reserved IP addresses are not allowed")
+    except ValueError as e:
+        if "not allowed" in str(e):
+            raise
+        # Not an IP address (it's a hostname) — allowed
+
+
+# ── Website Scraper ───────────────────────────────────────────────────────────
+
+def scrape_website(url: str) -> dict:
+    """
+    Scrape a website URL and return structured content for AI analysis.
+    Returns: { url, title, description, headings, body_text, word_count }
+    """
+    _validate_scrape_url(url)
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; AutoBlogBot/1.0; +https://autoblog.ai)",
+        "Accept": "text/html,application/xhtml+xml",
+    }
+
+    try:
+        resp = httpx.get(url, headers=headers, timeout=15, follow_redirects=True)
+        resp.raise_for_status()
+    except httpx.TimeoutException:
+        raise ValueError(f"Request timed out fetching: {url}")
+    except httpx.HTTPStatusError as e:
+        raise ValueError(f"HTTP {e.response.status_code} when fetching: {url}")
+    except Exception as e:
+        raise ValueError(f"Failed to fetch URL: {e}")
+
+    soup = BeautifulSoup(resp.text, "lxml")
+
+    # Remove noise
+    for tag in soup(["script", "style", "nav", "footer", "header", "aside", "form", "noscript"]):
+        tag.decompose()
+
+    title = (soup.find("title") or soup.find("h1") or soup.find("h2"))
+    title_text = title.get_text(strip=True) if title else ""
+
+    meta_desc = soup.find("meta", attrs={"name": "description"})
+    description = meta_desc["content"].strip() if meta_desc and meta_desc.get("content") else ""
+
+    headings = []
+    for tag in soup.find_all(["h1", "h2", "h3"]):
+        text = tag.get_text(strip=True)
+        if text and len(text) > 3:
+            headings.append(text)
+    headings = headings[:20]
+
+    main = soup.find("main") or soup.find("article") or soup.find("body")
+    raw_text = main.get_text(separator=" ", strip=True) if main else soup.get_text(separator=" ", strip=True)
+
+    body_text = re.sub(r"\s+", " ", raw_text).strip()
+    body_text = body_text[:5000]  # cap at 5k chars for Gemini
+
+    word_count = len(body_text.split())
+
+    return {
+        "url": url,
+        "title": title_text,
+        "description": description,
+        "headings": headings,
+        "body_text": body_text,
+        "word_count": word_count,
+    }
+
+
 # ── Orchestration ─────────────────────────────────────────────────────────────
 
 def create_agent_and_schedule(
@@ -358,102 +469,46 @@ def create_agent_and_schedule(
     # 3. Generate schedule dates (in Python, not Gemini)
     post_dates = calculate_post_dates(duration_months, frequency)
 
-    # 4. Ask Gemini for titles/descriptions
-    prompt = build_plan_prompt(
-        scenario=scenario,
-        post_dates=post_dates,
-        website_url=website_url,
-        themes=themes,
-        tone=tone,
-        audience=audience,
-        content_length=content_length,
-        brand_name=brand_name,
-        brand_description=brand_description,
-        language=language,
-    )
-    raw = ask_gemini(prompt)
-    schedule_items = parse_json_from_gemini(raw)
+    # 4. Ask Gemini for titles/descriptions — rollback agent if this fails
+    try:
+        prompt = build_plan_prompt(
+            scenario=scenario,
+            post_dates=post_dates,
+            website_url=website_url,
+            themes=themes,
+            tone=tone,
+            audience=audience,
+            content_length=content_length,
+            brand_name=brand_name,
+            brand_description=brand_description,
+            language=language,
+        )
+        raw = ask_gemini(prompt)
+        schedule_items = parse_json_from_gemini(raw)
 
-    word_count = CONTENT_LENGTH_TO_WORDS[content_length]
+        word_count = CONTENT_LENGTH_TO_WORDS[content_length]
 
-    # 5. Bulk-insert schedule
-    entries = []
-    for i, item in enumerate(schedule_items):
-        entries.append({
-            "agent_id": agent["id"],
-            "user_id": user_id,
-            "scheduled_date": post_dates[i] if i < len(post_dates) else item.get("date"),
-            "title": item["title"],
-            "description": item["description"],
-            "keywords": item.get("keywords", []),
-            "word_count": item.get("word_count", word_count),
-            "status": "pending",
-        })
-    schedule = create_schedule_entries(entries)
+        # 5. Bulk-insert schedule
+        entries = []
+        for i, item in enumerate(schedule_items):
+            entries.append({
+                "agent_id": agent["id"],
+                "user_id": user_id,
+                "scheduled_date": post_dates[i] if i < len(post_dates) else item.get("date"),
+                "title": item["title"],
+                "description": item["description"],
+                "keywords": item.get("keywords", []),
+                "word_count": item.get("word_count", word_count),
+                "status": "pending",
+            })
+        schedule = create_schedule_entries(entries)
+
+    except Exception:
+        # Atomic rollback: remove the agent so no orphan records are left
+        supabase.table("agents").delete().eq("id", agent["id"]).execute()
+        raise
 
     return {"agent": agent, "schedule": schedule}
-
-
-
-# ── Website Scraper ───────────────────────────────────────────────────────────
-
-def scrape_website(url: str) -> dict:
-    """
-    Scrape a website URL and return structured content for AI analysis.
-    Returns: { url, title, description, headings, body_text, word_count }
-    """
-    headers = {
-        "User-Agent": "Mozilla/5.0 (compatible; AutoBlogBot/1.0; +https://autoblog.ai)",
-        "Accept": "text/html,application/xhtml+xml",
-    }
-
-    try:
-        resp = httpx.get(url, headers=headers, timeout=15, follow_redirects=True)
-        resp.raise_for_status()
-    except httpx.TimeoutException:
-        raise ValueError(f"Request timed out fetching: {url}")
-    except httpx.HTTPStatusError as e:
-        raise ValueError(f"HTTP {e.response.status_code} when fetching: {url}")
-    except Exception as e:
-        raise ValueError(f"Failed to fetch URL: {e}")
-
-    soup = BeautifulSoup(resp.text, "lxml")
-
-    # Remove noise
-    for tag in soup(["script", "style", "nav", "footer", "header", "aside", "form", "noscript"]):
-        tag.decompose()
-
-    title = (soup.find("title") or soup.find("h1") or soup.find("h2"))
-    title_text = title.get_text(strip=True) if title else ""
-
-    meta_desc = soup.find("meta", attrs={"name": "description"})
-    description = meta_desc["content"].strip() if meta_desc and meta_desc.get("content") else ""
-
-    headings = []
-    for tag in soup.find_all(["h1", "h2", "h3"]):
-        text = tag.get_text(strip=True)
-        if text and len(text) > 3:
-            headings.append(text)
-    headings = headings[:20]
-
-    main = soup.find("main") or soup.find("article") or soup.find("body")
-    raw_text = main.get_text(separator=" ", strip=True) if main else soup.get_text(separator=" ", strip=True)
-
-    # Collapse whitespace
-    import re
-    body_text = re.sub(r"\s+", " ", raw_text).strip()
-    body_text = body_text[:5000]  # cap at 5k chars for Gemini
-
-    word_count = len(body_text.split())
-
-    return {
-        "url": url,
-        "title": title_text,
-        "description": description,
-        "headings": headings,
-        "body_text": body_text,
-        "word_count": word_count,
-    }
 
 
 def get_or_generate_blog(agent_id: str, user_id: str, target_date: str) -> dict:
@@ -477,7 +532,7 @@ def get_or_generate_blog(agent_id: str, user_id: str, target_date: str) -> dict:
     agent = get_agent(agent_id, user_id) or {}
 
     prompt = build_content_prompt(
-        scenario=agent.get("scenario", "themed"),
+        scenario=agent.get("scenario", "data"),
         title=entry["title"],
         description=entry["description"],
         keywords=entry.get("keywords") or [],
@@ -504,5 +559,3 @@ def get_or_generate_blog(agent_id: str, user_id: str, target_date: str) -> dict:
 
     mark_schedule_published(entry["id"])
     return saved
-
-
